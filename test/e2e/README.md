@@ -265,6 +265,28 @@ ginkgo -v --label-filter="smoke" ./test/e2e/
    | `waiting-requests` | `2` | Above aggressive threshold (1) → scale-up; below conservative threshold (100) → no scale-up |
    | `running-requests` | `1` | Baseline activity signal |
 
+5. **Scale-To-Zero Regression (#690)** (~5-8 min)
+   - Guards the scale-to-zero decision query
+     `sum(increase(vllm:request_success_total{namespace, model_name}[retention]))`,
+     which #690 reported silently matched no series when the scraped metric was
+     missing the `namespace`/`model_name` labels (causing the model to never scale
+     to zero). The original saturation-based e2e coverage for this was deleted with
+     PR #787 and was never restored.
+   - Creates a single-variant simulator model registered via an annotated KEDA
+     ScaledObject (`minReplicaCount=0`), drives real traffic against it, then toggles
+     scale-to-zero on at runtime through `wva-model-scale-to-zero-config` (default
+     entry, live-reloaded by the controller) and observes the full lifecycle.
+   - Three assertions: (a) `vllm:request_success_total` is queryable by
+     `namespace`+`model_name` (direct Prometheus check when reachable from the test
+     host via `PROMETHEUS_URL`, otherwise skipped); (b) replicas stay `>= 1` during
+     the retention window while requests are recent; (c) after traffic stops and the
+     retention period elapses, the model reaches `0` replicas.
+   - Discriminating: the saturation optimizer holds a single idle variant at `1`
+     ("cheapest-at-1"), so reaching `0` is exclusively the scale-to-zero enforcer's
+     work — which requires the request-count query to return a clean `0`. If the
+     #690 label bug were present, the query would error and the model would stay at `1`.
+   - Code: [`scale_to_zero_regression_test.go`](scale_to_zero_regression_test.go).
+
 **Run Command:**
 ```bash
 make test-e2e-full
